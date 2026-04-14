@@ -1,5 +1,40 @@
 #version 460
 
+// ----------------------------------------------------------------------------
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// This file is a derivative work of KrigBilateral.glsl, an mpv user
+// shader originally created by Shiandow for MPDN Extensions and later
+// ported to mpv / maintained by igv:
+//
+//     Copyright (C) Shiandow
+//     Copyright (C) igv (https://github.com/igv)
+//
+// The variable naming, weighting structure and joint/cross-bilateral
+// formulation used here were adapted from that code and then
+// simplified/tuned for gamescope's post-downscale cleanup use-case.
+// Because this is a translation of LGPL-licensed source — not a
+// clean-room re-implementation from scratch — copyright in the original
+// expression is retained and this file inherits the upstream
+// LGPLv3.0-or-later licence terms.
+//
+// NOTE: Although gamescope as a whole is distributed under the BSD
+// 2-Clause licence, *this file specifically* is licensed under the GNU
+// Lesser General Public License v3.0-or-later. Copies of the LGPLv3 and
+// the referenced GPLv3 are provided in `COPYING.LESSER.v3` and
+// `COPYING.GPL.v3` at the root of this repository.
+//
+//     This library is free software; you can redistribute it and/or
+//     modify it under the terms of the GNU Lesser General Public
+//     License as published by the Free Software Foundation; either
+//     version 3.0 of the License, or (at your option) any later version.
+//
+//     This library is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+//     Lesser General Public License for more details.
+// ----------------------------------------------------------------------------
+
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_scalar_block_layout   : require
 

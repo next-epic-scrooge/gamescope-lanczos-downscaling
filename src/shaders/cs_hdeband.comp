@@ -1,11 +1,41 @@
 #version 460
 
+// ----------------------------------------------------------------------------
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// This file is a derivative work of hdeband.glsl, an mpv user shader
+// originally written by an3223 as a homogeneous-run debander hook:
+//
+//     Copyright (C) an3223 (https://github.com/an3223)
+//
+// The algorithm, parameter defaults and per-direction run-length loop
+// were adapted from that code and reworked for gamescope's in-place
+// compute post-pass. Because this is a translation of LGPL-licensed
+// source, copyright in the original expression is retained and this
+// file inherits the upstream LGPLv2.1-or-later licence terms.
+//
+// NOTE: Although gamescope as a whole is distributed under the BSD
+// 2-Clause licence, *this file specifically* is licensed under the GNU
+// Lesser General Public License v2.1-or-later. A copy of that licence
+// is provided in `COPYING.LESSER.v2.1` at the root of this repository.
+//
+//     This program is free software; you can redistribute it and/or
+//     modify it under the terms of the GNU Lesser General Public
+//     License as published by the Free Software Foundation; either
+//     version 2.1 of the License, or (at your option) any later version.
+//
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+//     Lesser General Public License for more details.
+// ----------------------------------------------------------------------------
+
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_scalar_block_layout   : require
 
 // hdeband (homogeneous-run debanding) post-process.
 //
-// Port of hdeband.glsl by an3223 (LGPL) originally written as an mpv hook.
+// Port of hdeband.glsl by an3223 originally written as an mpv hook.
 // Adapted for gamescope: operates in RGB (compute shader) and runs as an
 // in-place post-pass after downscaling. Parameters match the reference
 // implementation's defaults for the RGB path.

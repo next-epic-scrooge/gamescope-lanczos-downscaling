@@ -66,6 +66,7 @@ See `gamescope --help` for a full list of options.
 * `-o`: set a frame-rate limit for the game when unfocused. Specified in frames per second. Defaults to unlimited.
 * `-F fsr`: use AMD FidelityFX™ Super Resolution 1.0 for upscaling
 * `-F nis`: use NVIDIA Image Scaling v1.0.3 for upscaling
+* `-F lanczos`: use EWA Lanczos4-sharpest (polar `jinc*jinc`) for downscaling, with built-in anti-ringing. Handles integer and fractional ratios (e.g. 4K→1080p, 1440p→1080p, 8K→1080p) and is intended as a Linux equivalent to Windows "supersampling" modes. Optional post-processing passes can be chained via `:`: e.g. `-F lanczos:krigbilateral`, `-F lanczos:hdeband`, `-F lanczos:krigbilateral,hdeband` — `krigbilateral` is an edge-preserving cross-channel smoother (adapted from Shiandow's KrigBilateral hook) and `hdeband` is a homogeneous-run debander (ported from an3223's hdeband.glsl).
 * `-S integer`: use integer scaling.
 * `-S stretch`: use stretch scaling, the game will fill the window. (e.g. 4:3 to 16:9)
 * `-b`: create a border-less window.

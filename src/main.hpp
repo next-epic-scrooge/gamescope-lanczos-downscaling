@@ -36,9 +36,19 @@ enum class GamescopeUpscaleFilter : uint32_t
     FSR,
     NIS,
     PIXEL,
+    LANCZOS,    // EWA Lanczos4 Sharpest downscaler (+ optional bilateral denoiser / hdeband passes)
 
     FROM_VIEW = 0xF, // internal
 };
+
+// Optional post-processing passes the LANCZOS filter can chain after the
+// downscale. Enabled via --filter=lanczos:bilateral etc.
+struct GamescopeLanczosOptions
+{
+    bool bBilateralDenoiser = false;
+    bool bHdeband           = false;
+};
+extern GamescopeLanczosOptions g_lanczosOptions;
 
 static constexpr bool DoesHardwareSupportUpscaleFilter( GamescopeUpscaleFilter eFilter )
 {

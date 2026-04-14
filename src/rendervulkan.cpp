@@ -44,6 +44,9 @@
 #include "cs_composite_rcas.h"
 #include "cs_easu.h"
 #include "cs_easu_fp16.h"
+#include "cs_ewa_lanczos.h"
+#include "cs_bilateral_denoiser.h"
+#include "cs_hdeband.h"
 #include "cs_gaussian_blur_horizontal.h"
 #include "cs_nis.h"
 #include "cs_nis_fp16.h"
@@ -953,6 +956,9 @@ bool CVulkanDevice::createShaders()
 		SHADER(EASU, cs_easu);
 		SHADER(NIS, cs_nis);
 	}
+	SHADER(EWA_LANCZOS, cs_ewa_lanczos);
+	SHADER(BILATERAL_DENOISER, cs_bilateral_denoiser);
+	SHADER(HDEBAND, cs_hdeband);
 	SHADER(RGB_TO_NV12, cs_rgb_to_nv12);
 #undef SHADER
 
@@ -1183,6 +1189,9 @@ void CVulkanDevice::compileAllPipelines()
 	SHADER(RCAS, k_nMaxLayers, k_nMaxYcbcrMask_ToPreCompile, 1);
 	SHADER(EASU, 1, 1, 1);
 	SHADER(NIS, 1, 1, 1);
+	SHADER(EWA_LANCZOS, 1, 1, 1);
+	SHADER(BILATERAL_DENOISER, 1, 1, 1);
+	SHADER(HDEBAND, 1, 1, 1);
 	SHADER(RGB_TO_NV12, 1, 1, 1);
 #undef SHADER
 
@@ -1609,6 +1618,11 @@ void CVulkanCmdBuffer::clearState()
 
 	m_target = nullptr;
 	m_useSrgb.reset();
+
+	for (auto& lut : m_shaperLut)
+		lut = nullptr;
+	for (auto& lut : m_lut3D)
+		lut = nullptr;
 }
 
 template<class PushData, class... Args>
@@ -3453,14 +3467,18 @@ static void update_tmp_images( uint32_t width, uint32_t height )
 	createFlags.bSampled = true;
 	createFlags.bStorage = true;
 
-	g_output.tmpOutput = new CVulkanTexture();
-	bool bSuccess = g_output.tmpOutput->BInit( width, height, 1u, DRM_FORMAT_ARGB8888, createFlags, nullptr );
-
-	if ( !bSuccess )
+	gamescope::OwningRc<CVulkanTexture> pNew = new CVulkanTexture();
+	if ( !pNew->BInit( width, height, 1u, DRM_FORMAT_ARGB8888, createFlags, nullptr ) )
 	{
 		vk_log.errorf( "failed to create fsr output" );
+		// Leave g_output.tmpOutput as-is (previous valid texture or nullptr)
+		// instead of replacing it with a broken one — broken textures would
+		// leak a VkImage/VkDeviceMemory slot on every retry and eventually
+		// exhaust the driver's allocation budget.
 		return;
 	}
+
+	g_output.tmpOutput = std::move( pNew );
 }
 
 
@@ -3865,6 +3883,37 @@ struct NisPushData_t
 			tempX, tempY);
 	}
 };
+
+struct LanczosPushData_t
+{
+	vec2_t u_invInputSize;
+	vec2_t u_invOutputSize;
+	vec2_t u_inputSize;
+	vec2_t u_scale;
+
+	LanczosPushData_t(uint32_t inputX, uint32_t inputY, uint32_t outputX, uint32_t outputY)
+	{
+		u_invInputSize  = { 1.0f / (float)inputX,  1.0f / (float)inputY };
+		u_invOutputSize = { 1.0f / (float)outputX, 1.0f / (float)outputY };
+		u_inputSize     = { (float)inputX, (float)inputY };
+		u_scale         = { (float)inputX / (float)outputX, (float)inputY / (float)outputY };
+	}
+};
+
+struct BilateralPushData_t
+{
+	uint32_t u_outputExtent[2];
+	uint32_t u_useJointGuide;
+	uint32_t _pad;
+
+	BilateralPushData_t(uint32_t outW, uint32_t outH, bool bJointGuide)
+	{
+		u_outputExtent[0] = outW;
+		u_outputExtent[1] = outH;
+		u_useJointGuide   = bJointGuide ? 1u : 0u;
+		_pad              = 0u;
+	}
+};
 #pragma pack(pop)
 
 void bind_all_layers(CVulkanCmdBuffer* cmdBuffer, const struct FrameInfo_t *frameInfo)
@@ -3995,6 +4044,56 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	for (uint32_t i = 0; i < EOTF_Count; i++)
 		cmdBuffer->bindColorMgmtLuts(i, frameInfo->shaperLut[i], frameInfo->lut3D[i]);
 
+	// Lanczos safety: the EWA Lanczos compute shader only reads s_samplers[0]
+	// (RGB(A)) and only targets rgba8. Bail to the plain BLIT path if layer 0
+	// is YCbCr, has invalid dimensions, or would produce a zero-sized temp.
+	// Without this guard, the dispatch crashes for games that briefly push an
+	// unusual buffer (e.g. Unity shader-compile/splash surfaces in Slay the
+	// Spire 2) through the lanczos pipeline on startup.
+	if ( frameInfo->useLanczosLayer0 )
+	{
+		const FrameInfo_t::Layer_t *l0 = &frameInfo->layers[0];
+		uint32_t inputX = l0->tex ? l0->tex->width() : 0;
+		uint32_t inputY = l0->tex ? l0->tex->height() : 0;
+		uint32_t tempX  = l0->tex ? l0->integerWidth() : 0;
+		uint32_t tempY  = l0->tex ? l0->integerHeight() : 0;
+
+		const bool bCanLanczos =
+			l0->tex != nullptr
+			&& !l0->isYcbcr()
+			&& inputX > 0 && inputY > 0
+			&& tempX > 0 && tempY > 0
+			&& tempX <= 16384 && tempY <= 16384
+			&& l0->scale.x > 1e-6f && l0->scale.x < 1.0e6f
+			&& l0->scale.y > 1e-6f && l0->scale.y < 1.0e6f;
+
+		static std::atomic<bool> s_loggedLanczos{ false };
+		if ( !s_loggedLanczos.exchange( true ) )
+		{
+			vk_log.infof(
+				"lanczos: first dispatch input=%ux%u temp=%ux%u scale=(%.4f,%.4f) "
+				"ycbcr=%d colorspace=%u fmt=0x%x canRun=%d layers=%d",
+				inputX, inputY, tempX, tempY,
+				l0->scale.x, l0->scale.y,
+				l0->tex ? (int)l0->isYcbcr() : -1,
+				(unsigned)l0->colorspace,
+				l0->tex ? (unsigned)l0->tex->format() : 0u,
+				(int)bCanLanczos,
+				frameInfo->layerCount );
+		}
+
+		if ( !bCanLanczos )
+		{
+			vk_log.infof(
+				"lanczos: skipping dispatch (unsafe input) input=%ux%u temp=%ux%u "
+				"scale=(%.4f,%.4f) ycbcr=%d — falling back to plain BLIT",
+				inputX, inputY, tempX, tempY,
+				l0->scale.x, l0->scale.y,
+				l0->tex ? (int)l0->isYcbcr() : -1 );
+			frameInfo->useLanczosLayer0 = false;
+		}
+	}
+
 	if ( frameInfo->useFSRLayer0 )
 	{
 		uint32_t inputX = frameInfo->layers[0].tex->width();
@@ -4027,6 +4126,155 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		cmdBuffer->uploadConstants<RcasPushData_t>(frameInfo, g_upscaleFilterSharpness / 10.0f);
 
 		cmdBuffer->dispatch(div_roundup(currentOutputWidth, pixelsPerGroup), div_roundup(currentOutputHeight, pixelsPerGroup));
+	}
+	else if ( frameInfo->useLanczosLayer0 )
+	{
+		uint32_t inputX = frameInfo->layers[0].tex->width();
+		uint32_t inputY = frameInfo->layers[0].tex->height();
+
+		uint32_t tempX = frameInfo->layers[0].integerWidth();
+		uint32_t tempY = frameInfo->layers[0].integerHeight();
+
+		update_tmp_images(tempX, tempY);
+
+		if ( g_output.tmpOutput == nullptr
+				|| g_output.tmpOutput->width()  != tempX
+				|| g_output.tmpOutput->height() != tempY )
+		{
+			vk_log.errorf( "lanczos: tmpOutput unavailable (%ux%u) — falling back to BLIT",
+				tempX, tempY );
+
+			cmdBuffer->bindPipeline( g_device.pipeline(SHADER_TYPE_BLIT, frameInfo->layerCount, frameInfo->ycbcrMask(), 0u, frameInfo->colorspaceMask(), outputTF ) );
+			bind_all_layers( cmdBuffer.get(), frameInfo );
+			cmdBuffer->bindTarget( compositeImage );
+			cmdBuffer->uploadConstants<BlitPushData_t>( frameInfo );
+
+			const int pixelsPerGroup = 8;
+			cmdBuffer->dispatch( div_roundup( currentOutputWidth, pixelsPerGroup ), div_roundup( currentOutputHeight, pixelsPerGroup ) );
+
+			goto after_composite;
+		}
+
+		// Run the EWA Lanczos downscale in its own command buffer.
+		// The EWA Lanczos compute shader's heavy per-pixel loop (~700+
+		// texture fetches at 2.67x downscale) interacts badly with the
+		// NVIDIA driver when followed by another dispatch in the same
+		// command buffer — the subsequent dispatch produces a black
+		// image.  Isolating EWA Lanczos in its own submission avoids
+		// the issue entirely.
+		{
+			const int lanczosGroup = 8;
+
+			{
+				auto lanczosCmdBuf = g_device.commandBuffer();
+				lanczosCmdBuf->bindPipeline(g_device.pipeline(SHADER_TYPE_EWA_LANCZOS));
+				lanczosCmdBuf->bindTarget(g_output.tmpOutput);
+				lanczosCmdBuf->bindTexture(0, frameInfo->layers[0].tex);
+				lanczosCmdBuf->setTextureSrgb(0, true);
+				lanczosCmdBuf->setSamplerUnnormalized(0, false);
+				lanczosCmdBuf->setSamplerNearest(0, false);
+				lanczosCmdBuf->uploadConstants<LanczosPushData_t>(inputX, inputY, tempX, tempY);
+				lanczosCmdBuf->dispatch(div_roundup(tempX, lanczosGroup), div_roundup(tempY, lanczosGroup));
+				uint64_t seq = g_device.submit(std::move(lanczosCmdBuf));
+				g_device.wait(seq);
+			}
+
+			// Optional post-process passes (bilateral denoiser / hdeband)
+			// run in a fresh command buffer after the EWA Lanczos submit
+			// has completed, avoiding the NVIDIA black-image issue.
+			gamescope::Rc<CVulkanTexture> lanczosFinal = g_output.tmpOutput;
+			bool bLanczosFinalIsAux = false;
+
+			auto ensureAux = [&]() -> bool {
+				if ( g_output.tmpOutputAux != nullptr
+						&& g_output.tmpOutputAux->width() == tempX
+						&& g_output.tmpOutputAux->height() == tempY )
+					return true;
+				CVulkanTexture::createFlags f;
+				f.bSampled = true;
+				f.bStorage = true;
+				g_output.tmpOutputAux = new CVulkanTexture();
+				if ( !g_output.tmpOutputAux->BInit( tempX, tempY, 1u, DRM_FORMAT_ARGB8888, f, nullptr ) )
+				{
+					vk_log.errorf( "lanczos: failed to create tmpOutputAux (%ux%u)", tempX, tempY );
+					g_output.tmpOutputAux = nullptr;
+					return false;
+				}
+				return true;
+			};
+
+			if ( g_lanczosOptions.bBilateralDenoiser || g_lanczosOptions.bHdeband )
+			{
+				auto postCmdBuf = g_device.commandBuffer();
+
+				auto runPostPass = [&]( ShaderType type ) {
+					if ( !ensureAux() )
+						return;
+					gamescope::Rc<CVulkanTexture> srcTex = lanczosFinal;
+					gamescope::Rc<CVulkanTexture> dstTex =
+						bLanczosFinalIsAux
+							? gamescope::Rc<CVulkanTexture>(g_output.tmpOutput)
+							: gamescope::Rc<CVulkanTexture>(g_output.tmpOutputAux);
+
+					postCmdBuf->bindPipeline(g_device.pipeline(type));
+					postCmdBuf->bindTarget(dstTex);
+					postCmdBuf->bindTexture(0, srcTex);
+					postCmdBuf->setTextureSrgb(0, true);
+					postCmdBuf->setSamplerUnnormalized(0, false);
+					postCmdBuf->setSamplerNearest(0, false);
+					postCmdBuf->dispatch(div_roundup(tempX, lanczosGroup), div_roundup(tempY, lanczosGroup));
+					lanczosFinal = dstTex;
+					bLanczosFinalIsAux = !bLanczosFinalIsAux;
+				};
+
+				if ( g_lanczosOptions.bBilateralDenoiser && ensureAux() )
+				{
+					gamescope::Rc<CVulkanTexture> srcTex = lanczosFinal;
+					gamescope::Rc<CVulkanTexture> dstTex =
+						bLanczosFinalIsAux
+							? gamescope::Rc<CVulkanTexture>(g_output.tmpOutput)
+							: gamescope::Rc<CVulkanTexture>(g_output.tmpOutputAux);
+
+					postCmdBuf->bindPipeline(g_device.pipeline(SHADER_TYPE_BILATERAL_DENOISER));
+					postCmdBuf->bindTarget(dstTex);
+					// Slot 0: downscaled colour source.
+					postCmdBuf->bindTexture(0, srcTex);
+					postCmdBuf->setTextureSrgb(0, true);
+					postCmdBuf->setSamplerUnnormalized(0, false);
+					postCmdBuf->setSamplerNearest(0, false);
+					// Slot 1: original hi-res game texture as joint bilateral guide.
+					postCmdBuf->bindTexture(1, frameInfo->layers[0].tex);
+					postCmdBuf->setTextureSrgb(1, true);
+					postCmdBuf->setSamplerUnnormalized(1, false);
+					postCmdBuf->setSamplerNearest(1, false);
+					postCmdBuf->uploadConstants<BilateralPushData_t>(tempX, tempY, true);
+					postCmdBuf->dispatch(div_roundup(tempX, lanczosGroup), div_roundup(tempY, lanczosGroup));
+					lanczosFinal = dstTex;
+					bLanczosFinalIsAux = !bLanczosFinalIsAux;
+				}
+				if ( g_lanczosOptions.bHdeband )
+					runPostPass( SHADER_TYPE_HDEBAND );
+
+				uint64_t seq = g_device.submit(std::move(postCmdBuf));
+				g_device.wait(seq);
+			}
+
+			// Final BLIT composite in the main command buffer: sample the
+			// downscaled result at 1:1 and composite with any remaining
+			// layers / color management.
+			struct FrameInfo_t lanczosFrameInfo = *frameInfo;
+			lanczosFrameInfo.layers[0].tex = lanczosFinal;
+			lanczosFrameInfo.layers[0].scale.x = 1.0f;
+			lanczosFrameInfo.layers[0].scale.y = 1.0f;
+
+			cmdBuffer->bindPipeline( g_device.pipeline(SHADER_TYPE_BLIT, lanczosFrameInfo.layerCount, lanczosFrameInfo.ycbcrMask(), 0u, lanczosFrameInfo.colorspaceMask(), outputTF ));
+			bind_all_layers(cmdBuffer.get(), &lanczosFrameInfo);
+			cmdBuffer->bindTarget(compositeImage);
+			cmdBuffer->uploadConstants<BlitPushData_t>(&lanczosFrameInfo);
+
+			const int pixelsPerGroup = 8;
+			cmdBuffer->dispatch(div_roundup(currentOutputWidth, pixelsPerGroup), div_roundup(currentOutputHeight, pixelsPerGroup));
+		}
 	}
 	else if ( frameInfo->useNISLayer0 )
 	{
@@ -4124,6 +4372,7 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 		cmdBuffer->dispatch(div_roundup(currentOutputWidth, pixelsPerGroup), div_roundup(currentOutputHeight, pixelsPerGroup));
 	}
 
+after_composite:
 	if ( pPipewireTexture != nullptr )
 	{
 

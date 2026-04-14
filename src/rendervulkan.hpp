@@ -281,6 +281,7 @@ struct FrameInfo_t
 {
 	bool useFSRLayer0;
 	bool useNISLayer0;
+	bool useLanczosLayer0;
 	bool bFadingOut;
 	BlurMode blurLayer0;
 	int blurRadius;
@@ -541,6 +542,8 @@ struct VulkanOutput_t
 
 	// NIS and FSR
 	gamescope::OwningRc<CVulkanTexture> tmpOutput;
+	// Ping-pong scratch for LANCZOS post-process passes (bilateral denoiser / hdeband).
+	gamescope::OwningRc<CVulkanTexture> tmpOutputAux;
 
 	// NIS
 	gamescope::OwningRc<CVulkanTexture> nisScalerImage;
@@ -556,6 +559,9 @@ enum ShaderType {
 	SHADER_TYPE_EASU,
 	SHADER_TYPE_RCAS,
 	SHADER_TYPE_NIS,
+	SHADER_TYPE_EWA_LANCZOS,
+	SHADER_TYPE_BILATERAL_DENOISER,
+	SHADER_TYPE_HDEBAND,
 	SHADER_TYPE_RGB_TO_NV12,
 
 	SHADER_TYPE_COUNT

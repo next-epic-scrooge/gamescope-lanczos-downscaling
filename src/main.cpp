@@ -172,7 +172,11 @@ const char usage[] =
 	"  -r, --nested-refresh           game refresh rate (frames per second)\n"
 	"  -m, --max-scale                maximum scale factor\n"
 	"  -S, --scaler                   upscaler type (auto, integer, fit, fill, stretch)\n"
-	"  -F, --filter                   upscaler filter (linear, nearest, fsr, nis, pixel)\n"
+	"  -F, --filter                   upscaler/downscale filter\n"
+"                                   linear, nearest, fsr, nis, pixel\n"
+"                                   lanczos  (EWA Lanczos4 sharpest downscaler)\n"
+"                                   lanczos:bilateral / lanczos:hdeband /\n"
+"                                   lanczos:bilateral,hdeband combine post-process passes\n"
 	"                                     fsr => AMD FidelityFX™ Super Resolution 1.0\n"
 	"                                     nis => NVIDIA Image Scaling v1.0.3\n"
 	"  --sharpness, --fsr-sharpness   upscaler sharpness from 0 (max) to 20 (min)\n"
@@ -313,6 +317,8 @@ GamescopeUpscaleFilter g_wantedUpscaleFilter = GamescopeUpscaleFilter::LINEAR;
 GamescopeUpscaleScaler g_wantedUpscaleScaler = GamescopeUpscaleScaler::AUTO;
 int g_upscaleFilterSharpness = 2;
 
+GamescopeLanczosOptions g_lanczosOptions = {};
+
 gamescope::GamescopeModeGeneration g_eGamescopeModeGeneration = gamescope::GAMESCOPE_MODE_GENERATE_CVT;
 
 bool g_bBorderlessOutputWindow = false;
@@ -410,6 +416,28 @@ static enum GamescopeUpscaleFilter parse_upscaler_filter(const char *str)
 		return GamescopeUpscaleFilter::NIS;
 	} else if (strcmp(str, "pixel") == 0) {
 		return GamescopeUpscaleFilter::PIXEL;
+	} else if (strncmp(str, "lanczos", 7) == 0 && (str[7] == '\0' || str[7] == ':')) {
+		// Syntax: lanczos[:pass1[,pass2...]]
+		// Known passes: bilateral, hdeband
+		g_lanczosOptions = {};
+		if (str[7] == ':') {
+			const char *p = str + 8;
+			while (*p) {
+				const char *comma = strchr(p, ',');
+				size_t len = comma ? (size_t)(comma - p) : strlen(p);
+				if (len == 9 && strncmp(p, "bilateral", 9) == 0) {
+					g_lanczosOptions.bBilateralDenoiser = true;
+				} else if (len == 7 && strncmp(p, "hdeband", 7) == 0) {
+					g_lanczosOptions.bHdeband = true;
+				} else {
+					fprintf( stderr, "gamescope: unknown lanczos post-process pass '%.*s' (valid: bilateral, hdeband)\n",
+						(int)len, p );
+					exit(1);
+				}
+				p = comma ? comma + 1 : p + len;
+			}
+		}
+		return GamescopeUpscaleFilter::LANCZOS;
 	} else {
 		fprintf( stderr, "gamescope: invalid value for --filter\n" );
 		exit(1);

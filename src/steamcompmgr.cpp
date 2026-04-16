@@ -7177,6 +7177,7 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 			upscaledFrameInfo.useFSRLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::FSR;
 			upscaledFrameInfo.useNISLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::NIS;
 			upscaledFrameInfo.useLanczosLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::LANCZOS;
+			upscaledFrameInfo.useHermiteLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::HERMITE;
 			globalScaleRatio = flOldGlobalScale;
 			zoomScaleRatio = flOldZoomScale;
 			flOldOverscanScale = flOldOverscanScale;

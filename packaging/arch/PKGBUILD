@@ -12,6 +12,22 @@
 # This fork is a drop-in replacement for `gamescope`. It provides and
 # conflicts with the upstream package; pacman will refuse to install both
 # at the same time.
+#
+# Usage:
+#
+#     mkdir -p ~/build/gamescope-lanczos-downscaling-git
+#     cd ~/build/gamescope-lanczos-downscaling-git
+#     curl -LO https://raw.githubusercontent.com/next-epic-scrooge/gamescope-lanczos-downscaling/master/packaging/arch/PKGBUILD
+#     makepkg -si
+#
+# Do NOT run `makepkg` from the root of a clone of this repo.  `makepkg`
+# stages its sources in `$startdir/src`, and this repo already has a `src/`
+# directory (with a `src/reshade` submodule).  `makepkg` would try to stage
+# the `reshade` git source on top of the already-populated submodule and
+# fail with "fatal: not a git repository".  Running it from a clean
+# directory with only this PKGBUILD avoids the collision.  The PKGBUILD
+# itself then clones a fresh copy of this repo plus every submodule it
+# needs into `$srcdir`.
 
 _pkgname=gamescope-lanczos-downscaling
 pkgname=${_pkgname}-git

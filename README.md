@@ -80,15 +80,19 @@ meson install -C build/ --skip-subprojects
 
 ### Arch Linux (PKGBUILD)
 
-A `PKGBUILD` is included at the repo root so the fork can be built and installed with `makepkg`:
+A `PKGBUILD` lives in `packaging/arch/`. The PKGBUILD itself fetches a fresh clone of this repo and all of its submodules, so there is no need to clone this repo first — just grab the one file and run `makepkg`:
 
 ```sh
-git clone https://github.com/next-epic-scrooge/gamescope-lanczos-downscaling.git
-cd gamescope-lanczos-downscaling
+mkdir -p ~/build/gamescope-lanczos-downscaling-git
+cd ~/build/gamescope-lanczos-downscaling-git
+curl -LO https://raw.githubusercontent.com/next-epic-scrooge/gamescope-lanczos-downscaling/master/packaging/arch/PKGBUILD
 makepkg -si
 ```
 
 The PKGBUILD handles submodule fetching, applies `patches/wlroots-libinput-switch-default.patch`, and produces `gamescope-lanczos-downscaling-git`, which `provides=`/`conflicts=` upstream `gamescope` (so pacman treats it as a drop-in replacement).
+
+> [!NOTE]
+> Do not run `makepkg` from the root of a clone of this repo. `makepkg` defines `$srcdir = $startdir/src`, and the gamescope source tree has its own `src/` directory (with the `src/reshade` submodule), so running from the repo root would make `makepkg` try to stage the `reshade` git source on top of the already-populated submodule and fail with `fatal: not a git repository`. Running from a clean directory with only the `PKGBUILD`, as above, sidesteps the collision. If you already have this repo cloned for other work, just copy `packaging/arch/PKGBUILD` into a fresh build directory.
 
 ## Keyboard shortcuts
 

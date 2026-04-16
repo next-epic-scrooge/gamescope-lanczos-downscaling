@@ -23,6 +23,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Apply wlroots libinput switch-default patch
+        run: |
+          # Same patch the README documents for local builds; without it
+          # wlroots fails with -Werror=switch on LIBINPUT_SWITCH_KEYPAD_SLIDE
+          # when built against the version of libinput on the Arch CI image.
+          # `--check` guards against double-applying if the wlroots pin ever
+          # advances past this issue upstream.
+          if git -C subprojects/wlroots apply --check \
+              ../../patches/wlroots-libinput-switch-default.patch 2>/dev/null; then
+            git -C subprojects/wlroots apply \
+              ../../patches/wlroots-libinput-switch-default.patch
+          fi
       - name: Build with gcc
         run: |
           export CC=gcc CXX=g++

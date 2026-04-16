@@ -22,10 +22,13 @@ The internal plumbing (new command-buffer submission split for the lanczos kerne
 
 ### Credits for the fork
 
-The downscale path was built on top of work by:
+This repository is a downstream fork of [**ThomasEricB/gamescope-lanczos-downscaling**](https://github.com/ThomasEricB/gamescope-lanczos-downscaling). Everything the `-F lanczos` / `:bilateral` / `:hdeband` paths do is Thomas's work — I (next-epic-scrooge) only added `-F hermite` on top. Huge thanks to him for putting the whole downscaler pipeline together and for the clean, well-commented code that made adding a new kernel a small change rather than a from-scratch project.
 
-* [**Ruan E. Formigoni**](https://github.com/ValveSoftware/gamescope/pull/740) — for the upstream Gamescope PR #740 (bicubic downscaling) provided the base of this fork's `-F lanczos` implementation.
-* [**Niklas Haas and the libplacebo contributors**](https://github.com/haasn/libplacebo) — for the original EWA Lanczos implementation.
+The downscale path itself was built on top of work by:
+
+* [**Thomas Eric B. (ThomasEricB)**](https://github.com/ThomasEricB/gamescope-lanczos-downscaling) — the direct parent of this fork. Integrated EWA Lanczos, the bilateral denoiser and the hdeband post-pass into gamescope, wired up the `-F lanczos[:...]` CLI surface, fixed the Wayland / KDE compositor-sizing issue, and carried the wlroots libinput compile patch. None of this fork exists without his.
+* [**Ruan E. Formigoni**](https://github.com/ValveSoftware/gamescope/pull/740) — for the upstream Gamescope PR #740 (bicubic downscaling) that provided the base of the `-F lanczos` implementation.
+* [**Niklas Haas and the libplacebo contributors**](https://github.com/haasn/libplacebo) — for the original EWA Lanczos implementation, and for the Hermite kernel definition this fork's `-F hermite` borrows from `src/filters.c` (`pl_filter_function_hermite`).
 * [**Shiandow**](https://github.com/Shiandow/MPDN_Extensions) and [**igv**](https://gist.github.com/igv/a015fc885d5c22e6891820ad89555637) — for the original KrigBilateral.glsl the bilateral denoiser is derived from.
 * [**an3223**](https://github.com/AN3223/dotfiles/tree/master) — for the original `hdeband.glsl` the debander is ported from.
 

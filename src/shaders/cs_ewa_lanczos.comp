@@ -132,6 +132,59 @@ float jinc( float x )
     return 2.0 * bessel_j1( t ) / t;
 }
 
+// Inline sRGB transfer functions.
+//
+// The input texture is bound with setTextureSrgb(true), which on this
+// codebase selects the UNORM image view — no hardware sRGB decode. So
+// we receive raw sRGB-encoded bytes and must linearise them ourselves
+// before averaging, otherwise the kernel sum is performed in
+// gamma-encoded space. Filtering in encoded space darkens mixed
+// regions unevenly across colour channels (observed in-game as a
+// warm/orange cast on blended edges). We re-encode the averaged
+// result before imageStore so the downstream composite shader still
+// sees sRGB-encoded values in the intermediate texture, matching the
+// FSR / NIS pipeline contract.
+//
+// These helpers are inlined instead of pulled in from colorimetry.h
+// because that header references composite-shader push-constant
+// uniforms (u_nitsToLinear, u_scale[], ...) that this shader does
+// not have.
+vec3 _ewa_srgb_to_linear( vec3 c )
+{
+    bvec3 isLo = lessThanEqual( c, vec3( 0.04045 ) );
+    vec3 loPart = c / 12.92;
+    vec3 hiPart = pow( ( c + 0.055 ) / 1.055, vec3( 2.4 ) );
+    return mix( hiPart, loPart, isLo );
+}
+
+vec3 _ewa_linear_to_srgb( vec3 c )
+{
+    bvec3 isLo = lessThanEqual( c, vec3( 0.0031308 ) );
+    vec3 loPart = c * 12.92;
+    vec3 hiPart = pow( max( c, vec3( 0.0 ) ), vec3( 1.0 / 2.4 ) ) * 1.055 - 0.055;
+    return mix( hiPart, loPart, isLo );
+}
+
+// Linearise a fetched sample based on the layer-0 colorspace spec
+// constant. Only sRGB is transformed explicitly; other colorspaces
+// (linear / scRGB / PQ / passthru) are left untouched because correctly
+// handling them requires the full composite uniform block.
+vec3 _ewa_degamma( vec3 c )
+{
+    uint cs = get_layer_colorspace( 0 );
+    if ( cs == colorspace_sRGB )
+        return _ewa_srgb_to_linear( c );
+    return c;
+}
+
+vec3 _ewa_regamma( vec3 c )
+{
+    uint cs = get_layer_colorspace( 0 );
+    if ( cs == colorspace_sRGB )
+        return _ewa_linear_to_srgb( c );
+    return c;
+}
+
 // Evaluate the ewa_lanczos4sharpest kernel at unit-space distance `x`
 // (i.e. the kernel already scaled by 1/F for the downscale factor).
 float lanczos_weight( float x )
@@ -193,6 +246,7 @@ void main()
 
             vec2 uv = sc * u_invInputSize;
             vec4 s  = textureLod( s_samplers[0], uv, 0.0 );
+            s.rgb   = _ewa_degamma( s.rgb );
 
             color += s * w;
             wsum  += w;
@@ -209,11 +263,15 @@ void main()
         color /= wsum;
 
     // Anti-ringing clamp: mix the original output towards [arMin,arMax].
+    // Both `color` and arMin/arMax are in linear space here, so the clamp
+    // is a linear-space clamp (more correct than clamping in sRGB-encoded
+    // space).
     if ( arMax.r >= arMin.r )
     {
         vec4 clamped = clamp( color, arMin, arMax );
         color = mix( color, clamped, LANCZOS_ANTIRING );
     }
 
+    color.rgb = _ewa_regamma( color.rgb );
     imageStore( dst, outPos, color );
 }

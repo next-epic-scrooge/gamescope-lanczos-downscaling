@@ -4183,7 +4183,15 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 
 			{
 				auto lanczosCmdBuf = g_device.commandBuffer();
-				lanczosCmdBuf->bindPipeline(g_device.pipeline(downscaleShader));
+				// Pass the layer's colorspace mask so the EWA shader's
+				// get_layer_colorspace(0) spec constant reflects the real
+				// input format. The shader uses this to decode sRGB
+				// samples to linear before kernel averaging and re-encode
+				// the result before imageStore — filtering in
+				// gamma-encoded space would introduce chromatic errors
+				// (a warm/orange cast on blended edges, visible as a
+				// "night-mode-forced" tint in-game).
+				lanczosCmdBuf->bindPipeline(g_device.pipeline(downscaleShader, 1, 0, 0, frameInfo->colorspaceMask()));
 				lanczosCmdBuf->bindTarget(g_output.tmpOutput);
 				lanczosCmdBuf->bindTexture(0, frameInfo->layers[0].tex);
 				lanczosCmdBuf->setTextureSrgb(0, true);

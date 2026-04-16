@@ -958,6 +958,7 @@ bool CVulkanDevice::createShaders()
 		SHADER(NIS, cs_nis);
 	}
 	SHADER(EWA_LANCZOS, cs_ewa_lanczos);
+	SHADER(EWA_HERMITE, cs_ewa_hermite);
 	SHADER(BILATERAL_DENOISER, cs_bilateral_denoiser);
 	SHADER(HDEBAND, cs_hdeband);
 	SHADER(RGB_TO_NV12, cs_rgb_to_nv12);

@@ -440,6 +440,28 @@ static enum GamescopeUpscaleFilter parse_upscaler_filter(const char *str)
 			}
 		}
 		return GamescopeUpscaleFilter::LANCZOS;
+	} else if (strncmp(str, "hermite", 7) == 0 && (str[7] == '\0' || str[7] == ':')) {
+		// Syntax: hermite[:pass1[,pass2...]]
+		// Shares the bilateral / hdeband post-process passes with lanczos.
+		g_lanczosOptions = {};
+		if (str[7] == ':') {
+			const char *p = str + 8;
+			while (*p) {
+				const char *comma = strchr(p, ',');
+				size_t len = comma ? (size_t)(comma - p) : strlen(p);
+				if (len == 9 && strncmp(p, "bilateral", 9) == 0) {
+					g_lanczosOptions.bBilateralDenoiser = true;
+				} else if (len == 7 && strncmp(p, "hdeband", 7) == 0) {
+					g_lanczosOptions.bHdeband = true;
+				} else {
+					fprintf( stderr, "gamescope: unknown hermite post-process pass '%.*s' (valid: bilateral, hdeband)\n",
+						(int)len, p );
+					exit(1);
+				}
+				p = comma ? comma + 1 : p + len;
+			}
+		}
+		return GamescopeUpscaleFilter::HERMITE;
 	} else {
 		fprintf( stderr, "gamescope: invalid value for --filter\n" );
 		exit(1);

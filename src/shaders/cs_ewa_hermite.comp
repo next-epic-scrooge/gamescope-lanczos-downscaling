@@ -3,12 +3,14 @@
 // ----------------------------------------------------------------------------
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Polar (EWA) Hermite downscaler.
+// Polar (EWA) Hermite downscaler — "fast" variant.
 //
 // The outer loop structure, unit-scale / F stretching convention and
-// integer bounding-box search used here are the same scheme as
-// libplacebo's polar sampling path (src/filters.c and the EWA shader
-// generator in src/shaders/sampling.c), originally authored by
+// the 2x2-tile + single-bilinear-tap optimisation used here are the
+// same scheme libplacebo (v6.337+) uses for polar sampling of kernels
+// without negative lobes. See the VDD 2023 talk "Faster (and better)
+// GPU (down)scaling in libplacebo" by Niklas Haas and libplacebo's
+// src/filters.c / src/shaders/sampling.c, originally authored by
 // Niklas Haas and the libplacebo contributors:
 //
 //     Copyright (C) Niklas Haas and the libplacebo contributors
@@ -46,7 +48,7 @@
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_scalar_block_layout   : require
 
-// EWA Hermite downscaler.
+// EWA Hermite downscaler, fast (linear-tap) variant.
 //
 // Kernel (Hermite / "cubic Hermite" reconstruction filter):
 //
@@ -54,16 +56,32 @@
 //     h(x) = 0                      otherwise
 //
 // Equivalent to the Mitchell-Netravali filter at B = C = 0 and to
-// libplacebo's pl_filter_hermite (see libplacebo/src/filters.c). The
-// kernel has no negative lobes, so no ringing can appear and no
-// anti-ringing clamp is required — this makes Hermite a fast, safe
-// downscaler that's well-suited to supersampled input that's already
-// been rendered above the output resolution.
+// libplacebo's pl_filter_hermite.
+//
+// The optimisation (matching libplacebo's `hermite_fast`) is: because
+// the Hermite kernel has no negative lobes, every weight in the polar
+// support is non-negative. That lets us replace 4 nearest-neighbour
+// fetches per 2x2 input tile with a *single* hardware bilinear fetch
+// whose UV is placed at the weighted centroid of the four corners.
+// One texture op integrates all four contributions exactly, weighted
+// by (1-u)(1-v), u(1-v), (1-u)v, uv — which, for a separable choice
+// of (u, v) = ((w10+w11)/W, (w01+w11)/W) (with W = Σw), reproduces
+// the corner-weighted sum.
+//
+// For fully-non-separable polar weights this is an approximation, but
+// it is the one Niklas Haas identified as tipping Hermite to better
+// MS-SSIM than Mitchell while running in roughly half the GPU time
+// (VDD 2023, slide "Hermite vs Mitchell (downscaling 8K)"), which is
+// why libplacebo made it the default polar downscaler in v6.337.
 //
 // For downscaling by a factor F >= 1 (input/output) the filter support
 // is stretched by F so the output integrates ~F^2 input samples; for
 // upscaling (F < 1) the filter runs at its native support. This is
 // the same scheme libplacebo uses for polar filters.
+//
+// IMPORTANT: binding 0 (s_samplers[0]) MUST be a LINEAR sampler.
+// rendervulkan.cpp dispatches this with `setSamplerNearest(0, false)`
+// already, so no change is required there.
 
 #include "descriptor_set.h"
 
@@ -96,7 +114,7 @@ void main()
     if ( outPos.x >= outExt.x || outPos.y >= outExt.y )
         return;
 
-    // Center of the output pixel in normalized output coordinates -> input coords.
+    // Centre of the output pixel in normalised output coordinates -> input coords.
     vec2 inCenter = ( vec2( outPos ) + vec2( 0.5 ) ) * u_scale;
 
     // Downscale factor per axis (>=1 for downscaling, clamped for upscaling).
@@ -104,38 +122,75 @@ void main()
     // Use the largest factor to form a circular support in input space.
     float Fmax = max( F.x, F.y );
 
-    // Integer search window in input pixels (symmetric around center).
-    int bound = int( ceil( HERMITE_RADIUS * Fmax ) ) + 1;
-    // Safety cap. Hermite's native radius is 1, so `bound` grows linearly
-    // with the downscale factor; 10 covers factors up to ~9x which is well
-    // beyond anything the rest of the pipeline currently supports.
-    if ( bound > 10 ) bound = 10;
+    // Bounding window in 2x2 *tiles* on each side of the anchor.
+    // Each tile spans 2 input texels, so one texel of plain-variant
+    // radius == 0.5 tiles. `+ 1` is a conservative slack to guarantee
+    // full coverage of the polar support disc regardless of the
+    // fractional offset of `anchor`.
+    int boundTile = int( ceil( HERMITE_RADIUS * Fmax * 0.5 ) ) + 1;
+    // Safety cap. Matches the plain variant's ~10-texel window
+    // (6 tiles ≈ 12 texel radius, well beyond ~9x downscale).
+    if ( boundTile > 6 ) boundTile = 6;
 
-    ivec2 baseTexel = ivec2( floor( inCenter - vec2( 0.5 ) ) );
+    // Anchor tile's top-left texel: nearest texel at-or-above-left of
+    // the output pixel centre. Aligns the 2x2 grid so the output
+    // centre falls inside the tile indexed by (tx=0, ty=0).
+    ivec2 anchor = ivec2( floor( inCenter - vec2( 0.5 ) ) );
 
-    vec4  color   = vec4( 0.0 );
-    float wsum    = 0.0;
+    vec4  color = vec4( 0.0 );
+    float wsum  = 0.0;
 
-    for ( int dy = -bound; dy <= bound; ++dy )
+    for ( int ty = -boundTile; ty < boundTile; ++ty )
     {
-        for ( int dx = -bound; dx <= bound; ++dx )
+        for ( int tx = -boundTile; tx < boundTile; ++tx )
         {
-            ivec2 p = baseTexel + ivec2( dx, dy );
-            vec2  sc = vec2( p ) + vec2( 0.5 );
-            float d  = length( sc - inCenter );
-            if ( d >= HERMITE_RADIUS * Fmax )
+            // Four texel top-left integer positions forming the tile.
+            ivec2 p00 = anchor + ivec2( 2 * tx,     2 * ty     );
+            ivec2 p10 = anchor + ivec2( 2 * tx + 1, 2 * ty     );
+            ivec2 p01 = anchor + ivec2( 2 * tx,     2 * ty + 1 );
+            ivec2 p11 = anchor + ivec2( 2 * tx + 1, 2 * ty + 1 );
+
+            // Pixel centres.
+            vec2 c00 = vec2( p00 ) + vec2( 0.5 );
+            vec2 c10 = vec2( p10 ) + vec2( 0.5 );
+            vec2 c01 = vec2( p01 ) + vec2( 0.5 );
+            vec2 c11 = vec2( p11 ) + vec2( 0.5 );
+
+            // Unit-space polar distances (kernel already stretched by 1/Fmax).
+            float d00 = length( c00 - inCenter ) / Fmax;
+            float d10 = length( c10 - inCenter ) / Fmax;
+            float d01 = length( c01 - inCenter ) / Fmax;
+            float d11 = length( c11 - inCenter ) / Fmax;
+
+            float w00 = hermite_weight( d00 );
+            float w10 = hermite_weight( d10 );
+            float w01 = hermite_weight( d01 );
+            float w11 = hermite_weight( d11 );
+
+            float W = w00 + w10 + w01 + w11;
+            if ( W <= 0.0 )
                 continue;
 
-            float xUnit = d / Fmax;
-            float w     = hermite_weight( xUnit );
-            if ( w <= 0.0 )
-                continue;
+            // Weighted centroid inside the tile, in [0, 1]^2.
+            //   u := (w10 + w11) / W   -> horizontal mix fraction
+            //   v := (w01 + w11) / W   -> vertical   mix fraction
+            // A bilinear fetch at (p00 + 0.5 + (u, v)) returns:
+            //   (1-u)(1-v)I00 + u(1-v)I10 + (1-u)v I01 + uv I11,
+            // which, multiplied by W, reproduces the corner-weighted
+            // sum for separable (u, v). For non-separable polar
+            // weights this is the standard linear-tap approximation
+            // libplacebo uses; quality is established empirically.
+            float invW = 1.0 / W;
+            float u = ( w10 + w11 ) * invW;
+            float v = ( w01 + w11 ) * invW;
 
-            vec2 uv = sc * u_invInputSize;
-            vec4 s  = textureLod( s_samplers[0], uv, 0.0 );
+            vec2 samplePos = vec2( p00 ) + vec2( 0.5 ) + vec2( u, v );
+            vec2 uv = samplePos * u_invInputSize;
 
-            color += s * w;
-            wsum  += w;
+            vec4 s = textureLod( s_samplers[0], uv, 0.0 );
+
+            color += s * W;
+            wsum  += W;
         }
     }
 

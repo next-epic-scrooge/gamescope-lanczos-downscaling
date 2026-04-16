@@ -142,16 +142,18 @@ bool commit_t::ShouldPreemptivelyUpscale()
     if ( DoesHardwareSupportUpscaleFilter( g_upscaleFilter ) )
         return false;
 
-    // LANCZOS is a downscaler that only runs at composite time. The
-    // pre-emptive upscale path in steamcompmgr.cpp temporarily forces
-    // globalScaleRatio=1.0 and unconditionally sets useLanczosLayer0,
-    // which fires the lanczos dispatch with no actual scaling work to
-    // do (and, because the path runs once per fifo commit, quickly
-    // exhausts Vulkan allocation slots via update_tmp_images retries,
-    // causing vkAllocateMemory to return OUT_OF_DEVICE_MEMORY and
-    // taking gamescope down). Skip preemptive handling entirely for
-    // LANCZOS — the composite-time path handles up/downscale fine.
-    if ( g_upscaleFilter == GamescopeUpscaleFilter::LANCZOS )
+    // LANCZOS / HERMITE are downscalers that only run at composite
+    // time. The pre-emptive upscale path in steamcompmgr.cpp temporarily
+    // forces globalScaleRatio=1.0 and unconditionally sets
+    // useLanczosLayer0 / useHermiteLayer0, which fires the downscale
+    // dispatch with no actual scaling work to do (and, because the path
+    // runs once per fifo commit, quickly exhausts Vulkan allocation
+    // slots via update_tmp_images retries, causing vkAllocateMemory to
+    // return OUT_OF_DEVICE_MEMORY and taking gamescope down). Skip
+    // preemptive handling entirely for those filters — the
+    // composite-time path handles up/downscale fine.
+    if ( g_upscaleFilter == GamescopeUpscaleFilter::LANCZOS
+        || g_upscaleFilter == GamescopeUpscaleFilter::HERMITE )
         return false;
 
     if ( !vulkanTex )

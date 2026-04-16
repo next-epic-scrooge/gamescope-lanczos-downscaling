@@ -37,12 +37,14 @@ enum class GamescopeUpscaleFilter : uint32_t
     NIS,
     PIXEL,
     LANCZOS,    // EWA Lanczos4 Sharpest downscaler (+ optional bilateral denoiser / hdeband passes)
+    HERMITE,    // EWA Hermite (cubic Hermite) downscaler — ringing-free, cheap
 
     FROM_VIEW = 0xF, // internal
 };
 
-// Optional post-processing passes the LANCZOS filter can chain after the
-// downscale. Enabled via --filter=lanczos:bilateral etc.
+// Optional post-processing passes the LANCZOS / HERMITE filters can chain
+// after the downscale. Enabled via --filter=lanczos:bilateral,
+// --filter=hermite:hdeband, etc.
 struct GamescopeLanczosOptions
 {
     bool bBilateralDenoiser = false;

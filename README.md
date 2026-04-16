@@ -75,6 +75,18 @@ Install with:
 meson install -C build/ --skip-subprojects
 ```
 
+### Arch Linux (PKGBUILD)
+
+A `PKGBUILD` is included at the repo root so the fork can be built and installed with `makepkg`:
+
+```sh
+git clone https://github.com/next-epic-scrooge/gamescope-lanczos-downscaling.git
+cd gamescope-lanczos-downscaling
+makepkg -si
+```
+
+The PKGBUILD handles submodule fetching, applies `patches/wlroots-libinput-switch-default.patch`, and produces `gamescope-lanczos-downscaling-git`, which `provides=`/`conflicts=` upstream `gamescope` (so pacman treats it as a drop-in replacement).
+
 ## Keyboard shortcuts
 
 * **Super + F** : Toggle fullscreen

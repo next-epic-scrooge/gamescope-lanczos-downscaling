@@ -1,0 +1,148 @@
+#version 460
+
+// ----------------------------------------------------------------------------
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// Polar (EWA) Hermite downscaler.
+//
+// The outer loop structure, unit-scale / F stretching convention and
+// integer bounding-box search used here are the same scheme as
+// libplacebo's polar sampling path (src/filters.c and the EWA shader
+// generator in src/shaders/sampling.c), originally authored by
+// Niklas Haas and the libplacebo contributors:
+//
+//     Copyright (C) Niklas Haas and the libplacebo contributors
+//     https://code.videolan.org/videolan/libplacebo
+//
+// Because this shader's structural expression mirrors libplacebo's
+// LGPL-licensed code rather than being a clean-room re-implementation,
+// copyright in the original expression is retained and this file is
+// distributed under libplacebo's LGPLv2.1 (or, at your option, any
+// later version) licence terms. The kernel polynomial itself is the
+// well-known Hermite / "cubic Hermite" reconstruction kernel and is
+// not copyrightable.
+//
+// NOTE: Although gamescope as a whole is distributed under the BSD
+// 2-Clause licence, *this file specifically* is licensed under the
+// GNU Lesser General Public License v2.1-or-later. A copy of that
+// licence is provided in `COPYING.LESSER` at the root of this
+// repository.
+//
+//     This program is free software; you can redistribute it and/or
+//     modify it under the terms of the GNU Lesser General Public
+//     License as published by the Free Software Foundation; either
+//     version 2.1 of the License, or (at your option) any later version.
+//
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+//     Lesser General Public License for more details.
+//
+//     You should have received a copy of the GNU Lesser General Public
+//     License along with this program; if not, see
+//     <https://www.gnu.org/licenses/lgpl-2.1.html>.
+// ----------------------------------------------------------------------------
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_scalar_block_layout   : require
+
+// EWA Hermite downscaler.
+//
+// Kernel (Hermite / "cubic Hermite" reconstruction filter):
+//
+//     h(x) = (2|x| - 3) * x^2 + 1   for |x| <= 1
+//     h(x) = 0                      otherwise
+//
+// Equivalent to the Mitchell-Netravali filter at B = C = 0 and to
+// libplacebo's pl_filter_hermite (see libplacebo/src/filters.c). The
+// kernel has no negative lobes, so no ringing can appear and no
+// anti-ringing clamp is required — this makes Hermite a fast, safe
+// downscaler that's well-suited to supersampled input that's already
+// been rendered above the output resolution.
+//
+// For downscaling by a factor F >= 1 (input/output) the filter support
+// is stretched by F so the output integrates ~F^2 input samples; for
+// upscaling (F < 1) the filter runs at its native support. This is
+// the same scheme libplacebo uses for polar filters.
+
+#include "descriptor_set.h"
+
+layout( local_size_x = 8, local_size_y = 8, local_size_z = 1 ) in;
+
+layout( binding = 0, scalar )
+uniform hermite_push_t {
+    vec2  u_invInputSize;   // 1.0 / input_size
+    vec2  u_invOutputSize;  // 1.0 / output_size
+    vec2  u_inputSize;      // textureSize of layer 0
+    vec2  u_scale;          // input_size / output_size (>1 means downscale)
+};
+
+const float HERMITE_RADIUS = 1.0;
+
+// Evaluate the Hermite kernel at unit-space distance `x`
+// (i.e. the kernel already scaled by 1/F for the downscale factor).
+float hermite_weight( float x )
+{
+    if ( x >= HERMITE_RADIUS )
+        return 0.0;
+    // (2x - 3) * x^2 + 1, monotonically decreasing from 1 at x=0 to 0 at x=1.
+    return ( 2.0 * x - 3.0 ) * x * x + 1.0;
+}
+
+void main()
+{
+    ivec2 outPos = ivec2( gl_GlobalInvocationID.xy );
+    ivec2 outExt = imageSize( dst );
+    if ( outPos.x >= outExt.x || outPos.y >= outExt.y )
+        return;
+
+    // Center of the output pixel in normalized output coordinates -> input coords.
+    vec2 inCenter = ( vec2( outPos ) + vec2( 0.5 ) ) * u_scale;
+
+    // Downscale factor per axis (>=1 for downscaling, clamped for upscaling).
+    vec2 F = max( u_scale, vec2( 1.0 ) );
+    // Use the largest factor to form a circular support in input space.
+    float Fmax = max( F.x, F.y );
+
+    // Integer search window in input pixels (symmetric around center).
+    int bound = int( ceil( HERMITE_RADIUS * Fmax ) ) + 1;
+    // Safety cap. Hermite's native radius is 1, so `bound` grows linearly
+    // with the downscale factor; 10 covers factors up to ~9x which is well
+    // beyond anything the rest of the pipeline currently supports.
+    if ( bound > 10 ) bound = 10;
+
+    ivec2 baseTexel = ivec2( floor( inCenter - vec2( 0.5 ) ) );
+
+    vec4  color   = vec4( 0.0 );
+    float wsum    = 0.0;
+
+    for ( int dy = -bound; dy <= bound; ++dy )
+    {
+        for ( int dx = -bound; dx <= bound; ++dx )
+        {
+            ivec2 p = baseTexel + ivec2( dx, dy );
+            vec2  sc = vec2( p ) + vec2( 0.5 );
+            float d  = length( sc - inCenter );
+            if ( d >= HERMITE_RADIUS * Fmax )
+                continue;
+
+            float xUnit = d / Fmax;
+            float w     = hermite_weight( xUnit );
+            if ( w <= 0.0 )
+                continue;
+
+            vec2 uv = sc * u_invInputSize;
+            vec4 s  = textureLod( s_samplers[0], uv, 0.0 );
+
+            color += s * w;
+            wsum  += w;
+        }
+    }
+
+    if ( wsum > 0.0 )
+        color /= wsum;
+
+    // Hermite has no negative lobes so no anti-ringing clamp is needed.
+
+    imageStore( dst, outPos, color );
+}

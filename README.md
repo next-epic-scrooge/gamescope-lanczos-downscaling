@@ -102,6 +102,9 @@ gamescope -w 1920 -h 1080 -W 3440 -H 1440 -b -- %command%
 # Render internally at 4K, output to a 1080p display, with EWA Lanczos4 downscaling
 gamescope -w 3840 -h 2160 -W 1920 -H 1080 -F lanczos -f -- %command%
 
+# Same, using the cheaper EWA Hermite downscaler (no ringing, fewer per-pixel fetches)
+gamescope -w 3840 -h 2160 -W 1920 -H 1080 -F hermite -f -- %command%
+
 # Same, plus a bilateral denoise pass on the downscale (cleans up compression noise
 # without softening edges)
 gamescope -w 3840 -h 2160 -W 1920 -H 1080 -F lanczos:bilateral -f -- %command%
@@ -109,6 +112,9 @@ gamescope -w 3840 -h 2160 -W 1920 -H 1080 -F lanczos:bilateral -f -- %command%
 # Full chain: downscale + bilateral + debander (good for HDR-ish content that
 # re-bands after the downscale)
 gamescope -w 3840 -h 2160 -W 1920 -H 1080 -F lanczos:bilateral,hdeband -f -- %command%
+
+# Hermite + bilateral + debander — the post-passes work with either downscaler
+gamescope -w 3840 -h 2160 -W 1920 -H 1080 -F hermite:bilateral,hdeband -f -- %command%
 ```
 
 ## Options
@@ -122,9 +128,10 @@ Same as normal gamescope. See `gamescope --help` for a full list of options.
 * `-F fsr`: use AMD FidelityFX™ Super Resolution 1.0 for upscaling.
 * `-F nis`: use NVIDIA Image Scaling v1.0.3 for upscaling.
 * `-F lanczos`: use EWA Lanczos4-sharpest (polar `jinc*jinc`) for downscaling, with built-in anti-ringing. Handles integer and fractional ratios (e.g. 4K→1080p, 1440p→1080p, 8K→1080p) and is intended as a Linux equivalent to Windows "supersampling" (DSR / DLDSR / VSR) modes.
-* `-F lanczos:bilateral`: as above, plus a joint / cross-bilateral denoise post-pass (edge-preserving sub-5%-luma smoother, adapted from Shiandow / igv's KrigBilateral).
-* `-F lanczos:hdeband`: as above, plus a homogeneous-run debander (ported from an3223's `hdeband.glsl`).
-* `-F lanczos:bilateral,hdeband`: run both post-passes, in order.
+* `-F hermite`: use EWA Hermite (polar cubic-Hermite, `(2x-3)x²+1`) for downscaling. No negative lobes, so no ringing / no anti-ringing clamp required — cheaper than `-F lanczos` and a good default when the input is already rendered above the output resolution.
+* `-F lanczos:bilateral` / `-F hermite:bilateral`: as above, plus a joint / cross-bilateral denoise post-pass (edge-preserving sub-5%-luma smoother, adapted from Shiandow / igv's KrigBilateral).
+* `-F lanczos:hdeband` / `-F hermite:hdeband`: as above, plus a homogeneous-run debander (ported from an3223's `hdeband.glsl`).
+* `-F lanczos:bilateral,hdeband` / `-F hermite:bilateral,hdeband`: run both post-passes, in order.
 * `-S integer`: use integer scaling.
 * `-S stretch`: use stretch scaling, the game will fill the window. (e.g. 4:3 to 16:9)
 * `-b`: create a border-less window.

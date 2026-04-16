@@ -45,6 +45,7 @@
 #include "cs_easu.h"
 #include "cs_easu_fp16.h"
 #include "cs_ewa_lanczos.h"
+#include "cs_ewa_hermite.h"
 #include "cs_bilateral_denoiser.h"
 #include "cs_hdeband.h"
 #include "cs_gaussian_blur_horizontal.h"
@@ -1190,6 +1191,7 @@ void CVulkanDevice::compileAllPipelines()
 	SHADER(EASU, 1, 1, 1);
 	SHADER(NIS, 1, 1, 1);
 	SHADER(EWA_LANCZOS, 1, 1, 1);
+	SHADER(EWA_HERMITE, 1, 1, 1);
 	SHADER(BILATERAL_DENOISER, 1, 1, 1);
 	SHADER(HDEBAND, 1, 1, 1);
 	SHADER(RGB_TO_NV12, 1, 1, 1);
@@ -4044,21 +4046,23 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 	for (uint32_t i = 0; i < EOTF_Count; i++)
 		cmdBuffer->bindColorMgmtLuts(i, frameInfo->shaperLut[i], frameInfo->lut3D[i]);
 
-	// Lanczos safety: the EWA Lanczos compute shader only reads s_samplers[0]
-	// (RGB(A)) and only targets rgba8. Bail to the plain BLIT path if layer 0
-	// is YCbCr, has invalid dimensions, or would produce a zero-sized temp.
-	// Without this guard, the dispatch crashes for games that briefly push an
-	// unusual buffer (e.g. Unity shader-compile/splash surfaces in Slay the
-	// Spire 2) through the lanczos pipeline on startup.
-	if ( frameInfo->useLanczosLayer0 )
+	// Lanczos / Hermite safety: the EWA compute shaders only read
+	// s_samplers[0] (RGB(A)) and only target rgba8. Bail to the plain
+	// BLIT path if layer 0 is YCbCr, has invalid dimensions, or would
+	// produce a zero-sized temp. Without this guard, the dispatch crashes
+	// for games that briefly push an unusual buffer (e.g. Unity
+	// shader-compile/splash surfaces in Slay the Spire 2) through the
+	// downscale pipeline on startup.
+	if ( frameInfo->useLanczosLayer0 || frameInfo->useHermiteLayer0 )
 	{
+		const char *kernelName = frameInfo->useHermiteLayer0 ? "hermite" : "lanczos";
 		const FrameInfo_t::Layer_t *l0 = &frameInfo->layers[0];
 		uint32_t inputX = l0->tex ? l0->tex->width() : 0;
 		uint32_t inputY = l0->tex ? l0->tex->height() : 0;
 		uint32_t tempX  = l0->tex ? l0->integerWidth() : 0;
 		uint32_t tempY  = l0->tex ? l0->integerHeight() : 0;
 
-		const bool bCanLanczos =
+		const bool bCanDownscale =
 			l0->tex != nullptr
 			&& !l0->isYcbcr()
 			&& inputX > 0 && inputY > 0
@@ -4067,30 +4071,33 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 			&& l0->scale.x > 1e-6f && l0->scale.x < 1.0e6f
 			&& l0->scale.y > 1e-6f && l0->scale.y < 1.0e6f;
 
-		static std::atomic<bool> s_loggedLanczos{ false };
-		if ( !s_loggedLanczos.exchange( true ) )
+		static std::atomic<bool> s_loggedDownscale{ false };
+		if ( !s_loggedDownscale.exchange( true ) )
 		{
 			vk_log.infof(
-				"lanczos: first dispatch input=%ux%u temp=%ux%u scale=(%.4f,%.4f) "
+				"%s: first dispatch input=%ux%u temp=%ux%u scale=(%.4f,%.4f) "
 				"ycbcr=%d colorspace=%u fmt=0x%x canRun=%d layers=%d",
+				kernelName,
 				inputX, inputY, tempX, tempY,
 				l0->scale.x, l0->scale.y,
 				l0->tex ? (int)l0->isYcbcr() : -1,
 				(unsigned)l0->colorspace,
 				l0->tex ? (unsigned)l0->tex->format() : 0u,
-				(int)bCanLanczos,
+				(int)bCanDownscale,
 				frameInfo->layerCount );
 		}
 
-		if ( !bCanLanczos )
+		if ( !bCanDownscale )
 		{
 			vk_log.infof(
-				"lanczos: skipping dispatch (unsafe input) input=%ux%u temp=%ux%u "
+				"%s: skipping dispatch (unsafe input) input=%ux%u temp=%ux%u "
 				"scale=(%.4f,%.4f) ycbcr=%d — falling back to plain BLIT",
+				kernelName,
 				inputX, inputY, tempX, tempY,
 				l0->scale.x, l0->scale.y,
 				l0->tex ? (int)l0->isYcbcr() : -1 );
 			frameInfo->useLanczosLayer0 = false;
+			frameInfo->useHermiteLayer0 = false;
 		}
 	}
 
@@ -4127,8 +4134,14 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 
 		cmdBuffer->dispatch(div_roundup(currentOutputWidth, pixelsPerGroup), div_roundup(currentOutputHeight, pixelsPerGroup));
 	}
-	else if ( frameInfo->useLanczosLayer0 )
+	else if ( frameInfo->useLanczosLayer0 || frameInfo->useHermiteLayer0 )
 	{
+		const bool bHermite = frameInfo->useHermiteLayer0;
+		const char *kernelName = bHermite ? "hermite" : "lanczos";
+		const ShaderType downscaleShader = bHermite
+			? SHADER_TYPE_EWA_HERMITE
+			: SHADER_TYPE_EWA_LANCZOS;
+
 		uint32_t inputX = frameInfo->layers[0].tex->width();
 		uint32_t inputY = frameInfo->layers[0].tex->height();
 
@@ -4141,8 +4154,8 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 				|| g_output.tmpOutput->width()  != tempX
 				|| g_output.tmpOutput->height() != tempY )
 		{
-			vk_log.errorf( "lanczos: tmpOutput unavailable (%ux%u) — falling back to BLIT",
-				tempX, tempY );
+			vk_log.errorf( "%s: tmpOutput unavailable (%ux%u) — falling back to BLIT",
+				kernelName, tempX, tempY );
 
 			cmdBuffer->bindPipeline( g_device.pipeline(SHADER_TYPE_BLIT, frameInfo->layerCount, frameInfo->ycbcrMask(), 0u, frameInfo->colorspaceMask(), outputTF ) );
 			bind_all_layers( cmdBuffer.get(), frameInfo );
@@ -4155,24 +4168,29 @@ std::optional<uint64_t> vulkan_composite( struct FrameInfo_t *frameInfo, gamesco
 			goto after_composite;
 		}
 
-		// Run the EWA Lanczos downscale in its own command buffer.
+		// Run the EWA downscale in its own command buffer.
 		// The EWA Lanczos compute shader's heavy per-pixel loop (~700+
 		// texture fetches at 2.67x downscale) interacts badly with the
 		// NVIDIA driver when followed by another dispatch in the same
 		// command buffer — the subsequent dispatch produces a black
-		// image.  Isolating EWA Lanczos in its own submission avoids
-		// the issue entirely.
+		// image.  Isolating the downscale in its own submission avoids
+		// the issue entirely.  The Hermite kernel's per-pixel loop is
+		// much smaller but we keep the same submit-split for simplicity
+		// and to preserve the NVIDIA workaround.
 		{
 			const int lanczosGroup = 8;
 
 			{
 				auto lanczosCmdBuf = g_device.commandBuffer();
-				lanczosCmdBuf->bindPipeline(g_device.pipeline(SHADER_TYPE_EWA_LANCZOS));
+				lanczosCmdBuf->bindPipeline(g_device.pipeline(downscaleShader));
 				lanczosCmdBuf->bindTarget(g_output.tmpOutput);
 				lanczosCmdBuf->bindTexture(0, frameInfo->layers[0].tex);
 				lanczosCmdBuf->setTextureSrgb(0, true);
 				lanczosCmdBuf->setSamplerUnnormalized(0, false);
 				lanczosCmdBuf->setSamplerNearest(0, false);
+				// The Hermite shader uses the same push-constant layout
+				// as the Lanczos one (vec2 invInput, invOutput, inputSize,
+				// scale) so we reuse LanczosPushData_t for both.
 				lanczosCmdBuf->uploadConstants<LanczosPushData_t>(inputX, inputY, tempX, tempY);
 				lanczosCmdBuf->dispatch(div_roundup(tempX, lanczosGroup), div_roundup(tempY, lanczosGroup));
 				uint64_t seq = g_device.submit(std::move(lanczosCmdBuf));

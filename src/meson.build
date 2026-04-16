@@ -71,6 +71,7 @@ shader_src = [
   'shaders/cs_nis_fp16.comp',
   'shaders/cs_rgb_to_nv12.comp',
   'shaders/cs_ewa_lanczos.comp',
+  'shaders/cs_ewa_hermite.comp',
   'shaders/cs_bilateral_denoiser.comp',
   'shaders/cs_hdeband.comp',
 ]

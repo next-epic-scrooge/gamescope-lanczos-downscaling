@@ -2606,6 +2606,7 @@ paint_all( global_focus_t *pFocus, bool async )
 					frameInfo.useFSRLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::FSR && needsScaling;
 					frameInfo.useNISLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::NIS && needsScaling;
 					frameInfo.useLanczosLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::LANCZOS && needsDownscale;
+					frameInfo.useHermiteLayer0 = g_upscaleFilter == GamescopeUpscaleFilter::HERMITE && needsDownscale;
 				}
 				if ( pFocus == GetCurrentFocus() )
 					update_touch_scaling( &frameInfo );
@@ -2747,6 +2748,7 @@ paint_all( global_focus_t *pFocus, bool async )
 		frameInfo.useFSRLayer0 = false;
 		frameInfo.useNISLayer0 = false;
 		frameInfo.useLanczosLayer0 = false;
+		frameInfo.useHermiteLayer0 = false;
 	}
 
 	g_bFSRActive = frameInfo.useFSRLayer0;

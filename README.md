@@ -37,21 +37,22 @@ And also:
 
 The gamescope project as a whole is distributed under the **BSD 2-Clause** license (see `LICENSE`).
 
-The three shader files added by this fork are derivative works of LGPL-licensed upstream code and are therefore licensed under the LGPL (the gamescope *whole* remains BSD-2-Clause; these files specifically carry a different licence):
+The four shader files added by this fork are derivative works of LGPL-licensed upstream code and are therefore licensed under the LGPL (the gamescope *whole* remains BSD-2-Clause; these files specifically carry a different licence):
 
 | File | Upstream | License |
 | --- | --- | --- |
 | `src/shaders/cs_ewa_lanczos.comp` | libplacebo (Niklas Haas) | **LGPL-2.1-or-later** |
+| `src/shaders/cs_ewa_hermite.comp` | libplacebo (Niklas Haas) — `hermite_fast` | **LGPL-2.1-or-later** |
 | `src/shaders/cs_bilateral_denoiser.comp` | KrigBilateral.glsl (Shiandow / igv) | **LGPL-3.0-or-later** |
 | `src/shaders/cs_hdeband.comp` | hdeband.glsl (an3223) | **LGPL-2.1-or-later** |
 
 Each of those files carries an SPDX header and the attribution / standard LGPL boilerplate at the top. The full license texts are bundled in this repository:
 
-* `COPYING.LESSER.v2.1` — full GNU LGPL v2.1 text (applies to `cs_ewa_lanczos.comp` and `cs_hdeband.comp`)
+* `COPYING.LESSER.v2.1` — full GNU LGPL v2.1 text (applies to `cs_ewa_lanczos.comp`, `cs_ewa_hermite.comp` and `cs_hdeband.comp`)
 * `COPYING.LESSER.v3` — full GNU LGPL v3.0 text (applies to `cs_bilateral_denoiser.comp`)
 * `COPYING.GPL.v3` — full GNU GPL v3.0 text (referenced by the LGPLv3)
 
-Rationale: the Lanczos / bilateral / hdeband math itself is public-domain signal-processing, but the specific *expression* of that math in those three shaders was adapted from existing LGPL-licensed code (libplacebo's `filters.c`, Shiandow / igv's `KrigBilateral.glsl`, and an3223's `hdeband.glsl`). Translating code between languages or APIs does not strip its copyright — so the translated files carry the upstream LGPL licence, while the rest of gamescope stays BSD-2-Clause.
+Rationale: the Lanczos / Hermite / bilateral / hdeband math itself is public-domain signal-processing, but the specific *expression* of that math in those four shaders was adapted from existing LGPL-licensed code (libplacebo's `filters.c` and `sampling.c`, Shiandow / igv's `KrigBilateral.glsl`, and an3223's `hdeband.glsl`). Translating code between languages or APIs does not strip its copyright — so the translated files carry the upstream LGPL licence, while the rest of gamescope stays BSD-2-Clause.
 
 ## Building
 
@@ -128,7 +129,7 @@ Same as normal gamescope. See `gamescope --help` for a full list of options.
 * `-F fsr`: use AMD FidelityFX™ Super Resolution 1.0 for upscaling.
 * `-F nis`: use NVIDIA Image Scaling v1.0.3 for upscaling.
 * `-F lanczos`: use EWA Lanczos4-sharpest (polar `jinc*jinc`) for downscaling, with built-in anti-ringing. Handles integer and fractional ratios (e.g. 4K→1080p, 1440p→1080p, 8K→1080p) and is intended as a Linux equivalent to Windows "supersampling" (DSR / DLDSR / VSR) modes.
-* `-F hermite`: use EWA Hermite (polar cubic-Hermite, `(2x-3)x²+1`) for downscaling. No negative lobes, so no ringing / no anti-ringing clamp required — cheaper than `-F lanczos` and a good default when the input is already rendered above the output resolution.
+* `-F hermite`: use EWA Hermite (polar cubic-Hermite, `(2x-3)x²+1`) for downscaling. No negative lobes, so no ringing / no anti-ringing clamp required. Uses libplacebo's **`hermite_fast`** 2×2-tile + single-hardware-bilinear-tap scheme (see Niklas Haas, *Faster (and better) GPU (down)scaling in libplacebo*, VDD 2023) — roughly one texture fetch per four source pixels, which in libplacebo's own measurements beats Mitchell on MS-SSIM at ~half the GPU time. Cheaper than `-F lanczos` and a good default when the input is already rendered above the output resolution.
 * `-F lanczos:bilateral` / `-F hermite:bilateral`: as above, plus a joint / cross-bilateral denoise post-pass (edge-preserving sub-5%-luma smoother, adapted from Shiandow / igv's KrigBilateral).
 * `-F lanczos:hdeband` / `-F hermite:hdeband`: as above, plus a homogeneous-run debander (ported from an3223's `hdeband.glsl`).
 * `-F lanczos:bilateral,hdeband` / `-F hermite:bilateral,hdeband`: run both post-passes, in order.

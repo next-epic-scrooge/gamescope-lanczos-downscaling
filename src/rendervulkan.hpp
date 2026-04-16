@@ -282,6 +282,7 @@ struct FrameInfo_t
 	bool useFSRLayer0;
 	bool useNISLayer0;
 	bool useLanczosLayer0;
+	bool useHermiteLayer0;
 	bool bFadingOut;
 	BlurMode blurLayer0;
 	int blurRadius;
